@@ -162,9 +162,7 @@ export class CjsToolDogma
 
     #source;
 
-    #attributesByName;
-
-    #attributesByID;
+    #attributes;
 
     #effects;
 
@@ -178,8 +176,7 @@ export class CjsToolDogma
     constructor(source, { localisation = null } = {})
     {
         this.#source = source;
-        this.#attributesByName = null;
-        this.#attributesByID = null;
+        this.#attributes = null;
         this.#effects = new Map();
         this.#localisation = localisation;
     }
@@ -427,12 +424,26 @@ export class CjsToolDogma
      * The attribute catalog, by name and by ID.
      *
      * Read once per open build and held: it is a few thousand small rows, and
-     * every evaluation needs the name-to-ID direction.
+     * every evaluation needs the name-to-ID direction. The read itself is held,
+     * not just its result, so evaluations arriving while it runs wait on it
+     * instead of each walking the table again; a failed read is forgotten so
+     * the next call tries again.
      */
-    async #Attributes()
+    #Attributes()
     {
-        if (this.#attributesByName) return { byName: this.#attributesByName, byID: this.#attributesByID };
+        this.#attributes ??= this.#ReadAttributes().catch(error =>
+        {
+            this.#attributes = null;
 
+            throw error;
+        });
+
+        return this.#attributes;
+    }
+
+    /** The attribute catalog, by name and by ID. */
+    async #ReadAttributes()
+    {
         const table = this.#source.Table("dogmaAttributes");
         const byName = new Map();
         const byID = new Map();
@@ -466,9 +477,6 @@ export class CjsToolDogma
 
             offset += page.length;
         }
-
-        this.#attributesByName = byName;
-        this.#attributesByID = byID;
 
         return { byName, byID };
     }

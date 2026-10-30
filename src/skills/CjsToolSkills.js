@@ -455,12 +455,26 @@ export class CjsToolSkills
      *
      * A whole pass over `typeDogma` - 26828 rows on one reference build -
      * because the SDE publishes only the forward direction. Held afterwards, since the
-     * question "what does this skill let me use" is asked far more than once.
+     * question "what does this skill let me use" is asked far more than once. The
+     * pass itself is held, not just its result, so questions arriving while it
+     * runs wait on it instead of each starting their own; a failed pass is
+     * forgotten so the next call tries again.
      */
-    async #Unlocks()
+    #Unlocks()
     {
-        if (this.#unlocks) return this.#unlocks;
+        this.#unlocks ??= this.#ReadUnlocks().catch(error =>
+        {
+            this.#unlocks = null;
 
+            throw error;
+        });
+
+        return this.#unlocks;
+    }
+
+    /** Skill to the types that require it, from one pass over `typeDogma`. */
+    async #ReadUnlocks()
+    {
         const attributes = await this.#Attributes();
         const pairs = REQUIREMENT_SLOTS
             .map(slot => [ attributes.byName.get(slot.skill)?.attributeID, attributes.byName.get(slot.level)?.attributeID ])
@@ -499,8 +513,6 @@ export class CjsToolSkills
             offset += page.length;
         }
 
-        this.#unlocks = unlocks;
-
         return unlocks;
     }
 
@@ -518,11 +530,22 @@ export class CjsToolSkills
         return values;
     }
 
-    /** The attribute catalog, by name. */
-    async #Attributes()
+    /** The attribute catalog, by name, read once and shared like `#Unlocks`. */
+    #Attributes()
     {
-        if (this.#attributes) return this.#attributes;
+        this.#attributes ??= this.#ReadAttributes().catch(error =>
+        {
+            this.#attributes = null;
 
+            throw error;
+        });
+
+        return this.#attributes;
+    }
+
+    /** The attribute catalog, by name. */
+    async #ReadAttributes()
+    {
         const table = this.#source.Table("dogmaAttributes");
         const byName = new Map();
         let offset = 0;
@@ -543,9 +566,7 @@ export class CjsToolSkills
             offset += page.length;
         }
 
-        this.#attributes = { byName };
-
-        return this.#attributes;
+        return { byName };
     }
 
     /** Reads one SDE table row and unwraps its payload envelope. */
