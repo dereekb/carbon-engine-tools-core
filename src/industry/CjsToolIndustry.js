@@ -225,11 +225,27 @@ export class CjsToolIndustry
         return list;
     }
 
-    /** Product type to blueprint type, built once per open build. */
-    async #ProductIndex()
+    /**
+     * Product type to blueprint type, built once per open build. The build
+     * itself is held, not just its result, so lookups arriving while it runs
+     * wait on it instead of each walking `blueprints` again; a failed build is
+     * forgotten so the next call tries again.
+     */
+    #ProductIndex()
     {
-        if (this.#productIndex) return this.#productIndex;
+        this.#productIndex ??= this.#ReadProductIndex().catch(error =>
+        {
+            this.#productIndex = null;
 
+            throw error;
+        });
+
+        return this.#productIndex;
+    }
+
+    /** Product type to blueprint type, from one pass over `blueprints`. */
+    async #ReadProductIndex()
+    {
         const table = this.#source.Table("blueprints");
         const index = new Map();
         let offset = 0;
@@ -268,8 +284,6 @@ export class CjsToolIndustry
 
             offset += page.length;
         }
-
-        this.#productIndex = index;
 
         return index;
     }

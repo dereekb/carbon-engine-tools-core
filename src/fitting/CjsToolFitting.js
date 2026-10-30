@@ -258,11 +258,28 @@ export class CjsToolFitting
         return null;
     }
 
-    /** Effect ID to slot, resolved from the source's own effect names. */
-    async #SlotEffects()
+    /**
+     * Effect ID to slot, read once. The read itself is held, not just its
+     * result: a burst of parses on a cold build would otherwise each start
+     * their own walk of the table, and on a service that answers one request
+     * at a time those walks interleave page by page until none of them ends.
+     * A failed read is forgotten so the next call tries again.
+     */
+    #SlotEffects()
     {
-        if (this.#slotEffects) return this.#slotEffects;
+        this.#slotEffects ??= this.#ReadSlotEffects().catch(error =>
+        {
+            this.#slotEffects = null;
 
+            throw error;
+        });
+
+        return this.#slotEffects;
+    }
+
+    /** Effect ID to slot, resolved from the source's own effect names. */
+    async #ReadSlotEffects()
+    {
         const table = this.#source.Table("dogmaEffects");
         const effects = new Map();
         let offset = 0;
@@ -283,16 +300,25 @@ export class CjsToolFitting
             offset += page.length;
         }
 
-        this.#slotEffects = effects;
-
         return effects;
     }
 
-    /** Group ID to category ID, read once. */
-    async #Categories()
+    /** Group ID to category ID, read once and shared like `#SlotEffects`. */
+    #Categories()
     {
-        if (this.#categories) return this.#categories;
+        this.#categories ??= this.#ReadCategories().catch(error =>
+        {
+            this.#categories = null;
 
+            throw error;
+        });
+
+        return this.#categories;
+    }
+
+    /** Group ID to category ID. */
+    async #ReadCategories()
+    {
         const table = this.#source.Table("groups");
         const groups = new Map();
         let offset = 0;
@@ -308,9 +334,27 @@ export class CjsToolFitting
             offset += page.length;
         }
 
-        this.#categories = groups;
-
         return groups;
+    }
+
+    /**
+     * Type names to IDs for one language, read once per language and shared
+     * like `#SlotEffects`: every name in a fit resolves through it, so a cold
+     * build sees one parse per name arrive together.
+     */
+    #NameIndex(language)
+    {
+        if (!this.#names.has(language))
+        {
+            this.#names.set(language, this.#ReadNameIndex(language).catch(error =>
+            {
+                this.#names.delete(language);
+
+                throw error;
+            }));
+        }
+
+        return this.#names.get(language);
     }
 
     /**
@@ -320,10 +364,8 @@ export class CjsToolFitting
      * live - retired duplicates that would shadow the real type of the same
      * name. Nothing unpublished can be in a fit anyway.
      */
-    async #NameIndex(language)
+    async #ReadNameIndex(language)
     {
-        if (this.#names.has(language)) return this.#names.get(language);
-
         const table = this.#source.Table("types");
         const index = new Map();
         let offset = 0;
@@ -350,8 +392,6 @@ export class CjsToolFitting
 
             offset += page.length;
         }
-
-        this.#names.set(language, index);
 
         return index;
     }
