@@ -110,7 +110,7 @@ is why the entry points read `.env`.
 
 ## Library shapes
 
-When `--out` is omitted, `build:audio` installs `audio_v2.json` and
+When `--out` is omitted, `build:audio` installs `audio_v3.json` and
 `build:character` installs `character_v10.json`, each with its deterministic
 gzip sibling, in the exact-build custom cache that their repositories and local
 HTTP routes read. Pass `--out` for distribution builds. Each library is

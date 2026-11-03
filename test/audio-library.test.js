@@ -144,7 +144,7 @@ test("audio CLI reads logical inputs from the shared ResFiles cache", context =>
   const installedPath = path.join(
     cacheDirectory,
     "custom", "targets", "eve", "builds", "3435006",
-    "audio_v2.json",
+    "audio_v3.json",
   );
 
   assert.equal(installed.status, 0, installed.stderr);

@@ -527,7 +527,7 @@ test("audio repository auto-prepares a missing library from indexed inputs", asy
         "eve",
         "builds",
         "123",
-        "audio_v2.json",
+        "audio_v3.json",
     );
 
     assert.ok(fs.existsSync(installedPath), "library installs into the custom cache");
@@ -655,7 +655,7 @@ test("audio repository optionally materializes embedded WEMs as generated resour
         provider: "ccp",
         build: "125",
         name: "audio",
-        version: "v2",
+        version: "v3",
     }, staleLibrary);
     installed.provenance.version = 0;
     installed.provenance.banks["999:0"] = {

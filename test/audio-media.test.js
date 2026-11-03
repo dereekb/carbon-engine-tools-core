@@ -337,7 +337,7 @@ test("audio repository opens the prepared exact-build library and index source",
         provider: "ccp",
         build: "123",
         name: "audio",
-        version: "v2",
+        version: "v3",
     }, CreateLibrary());
 
     const repository = new CjsToolAudioRepository({
@@ -471,7 +471,7 @@ test("audio repository reads only the v2 artifact", async context =>
         provider: "ccp",
         build: "123",
         name: "audio",
-        version: "v2",
+        version: "v3",
     }, CreateLibrary({ schemaVersion: 2 }));
 
     const repository = new CjsToolAudioRepository({ cache, indexes });
