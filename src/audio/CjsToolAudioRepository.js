@@ -10,10 +10,18 @@ import { CjsToolAudioSource } from "./CjsToolAudioSource.js";
 import { CjsToolMusicSource } from "./CjsToolMusicSource.js";
 
 /**
+ * The custom-cache version of the prepared `audio` library (`audio_<v>.json`).
+ * `v3` marks libraries whose SFX graph is schema 3 (the projected Wwise
+ * playback limits: `voiceLimits`, `priority`, `virtualVoice`); a runtime from
+ * before that graph refuses it, so the key moved rather than overwrite `v2`.
+ */
+export const AUDIO_LIBRARY_CACHE_VERSION = "v3";
+
+/**
  * Opens exact-build prepared audio libraries and their indexed byte sources.
  *
- * The prepared library is the schema-v2 `audio` document in the shared
- * exact-build custom cache, where `build:audio` also installs it (with its
+ * The prepared library is the schema-v2 `audio` document (SFX graph v3) in
+ * the shared exact-build custom cache (`AUDIO_LIBRARY_CACHE_VERSION`), where `build:audio` also installs it (with its
  * gzip sibling) when `--out` is omitted. A missing library is built on first
  * request from the build's own index rows, SoundbanksInfo and banks, using
  * `defaultLanguage` (or `en-us`) for the event-media graphs, unless
@@ -200,7 +208,7 @@ export class CjsToolAudioRepository
             provider: target.provider,
             build: sourceIdentity.build,
             name: "audio",
-            version: "v2",
+            version: AUDIO_LIBRARY_CACHE_VERSION,
         });
 
         try
@@ -342,7 +350,7 @@ export class CjsToolAudioRepository
             provider: target.provider,
             build: sourceIdentity.build,
             name: "audio",
-            version: "v2",
+            version: AUDIO_LIBRARY_CACHE_VERSION,
         }, values);
 
         return values;
@@ -380,7 +388,7 @@ export class CjsToolAudioRepository
             provider: target.provider,
             build: sourceIdentity.build,
             name: "audio",
-            version: "v2",
+            version: AUDIO_LIBRARY_CACHE_VERSION,
         }, libraryValue.GetValues());
 
         return libraryValue;

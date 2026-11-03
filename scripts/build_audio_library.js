@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { CjsFileIndex } from "@carbonenginejs/runtime/tools/fileindex";
 import {
+    AUDIO_LIBRARY_CACHE_VERSION,
     CjsToolAudio,
     CjsToolAudioBuilder,
     CjsToolAudioSource,
@@ -209,7 +210,7 @@ async function Main(argv)
             provider: target.provider,
             build: sourceBuild,
             name: "audio",
-            version: "v2",
+            version: AUDIO_LIBRARY_CACHE_VERSION,
         });
     CjsToolAudioSource.validateLibrary(values);
     const artifacts = await CjsToolLibraryArtifact.write(outPath, values, {

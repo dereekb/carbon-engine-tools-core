@@ -92,7 +92,7 @@ source catalog are reachable.
 
 ## Current limitations
 
-Audio routes require a prepared exact-build `audio_v2.json`. Current generated
+Audio routes require a prepared exact-build `audio_v3.json`. Current generated
 libraries describe loose WEMs, banks, optional embedded media, the authored
 SFX graph when built with `--sfx`, and the dynamic music graph when built with
 `--music`. Automatic preparation includes authored SFX and adds music whenever
