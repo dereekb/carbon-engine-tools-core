@@ -1357,6 +1357,206 @@ test("redirects a build-shaped resource to its immutable content address", async
     assert.equal(served.headers.get("x-carbon-resfile"), address);
 });
 
+test("revises, lists, refreshes and removes an override overlay without a restart", async context =>
+{
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "tools-core-proxy-revise-"));
+    const dataDirectory = path.join(directory, "data.local");
+    const sourceDirectory = path.join(directory, "textures");
+    const emptyDirectory = path.join(directory, "empty");
+    const handDirectory = path.join(directory, "hand");
+    const overlayStore = new CjsToolIndexOverlayStore(dataDirectory);
+    const texturePath = "dx9/model/turret/x/x_a.dds";
+    const official = Buffer.from("official-texture");
+    const replacement = Buffer.from("upscaled-texture");
+    const md5 = bytes => createHash("md5").update(bytes).digest("hex");
+
+    context.after(async () => fs.rm(directory, { recursive: true, force: true }));
+
+    const targets = new CjsToolTargetRegistry([ {
+        id: "eve",
+        game: "Eve",
+        provider: "ccp",
+        client: null,
+        libraries: [],
+        topics: [ "app", "res" ],
+    } ]);
+    const profiles = new CjsToolIndexTargetProfileRegistry([ {
+        target: "eve",
+        game: "Eve",
+        provider: "ccp",
+        defaultBuildRef: "latest",
+        remote: {
+            metadataBaseUrl: "https://metadata.test",
+            indexBaseUrl: "https://indexes.test",
+            appBaseUrl: "https://app.test",
+            resBaseUrl: "https://res.test",
+        },
+        clients: {},
+    } ]);
+    const responses = {
+        "https://indexes.test/eveonline_88.txt": "app:/resfileindex.txt,aa/main,,,,",
+        "https://app.test/aa/main":
+            `res:/${texturePath},bb/official,${md5(official)},${official.byteLength},${official.byteLength},\n`,
+        "https://res.test/bb/official": official,
+    };
+    const indexes = new CjsToolIndex({
+        targets,
+        profiles,
+        overlays: overlayStore,
+        cache: null,
+        fetch: async url =>
+        {
+            if (!(url in responses)) return { ok: false, status: 404 };
+
+            const body = Buffer.from(responses[url]);
+
+            return {
+                ok: true,
+                status: 200,
+                async arrayBuffer()
+                {
+                    return body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+                },
+            };
+        },
+    });
+    const server = new CjsToolHttpProxy({ indexes, overlays: overlayStore }).CreateServer();
+
+    await new Promise((resolve, reject) =>
+    {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+    });
+    context.after(() => new Promise(resolve => server.close(resolve)));
+
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const Get = route => fetch(`${origin}${route}`);
+    const Post = (route, body) => fetch(`${origin}${route}`, {
+        method: "POST",
+        body: JSON.stringify(body),
+    });
+    const revise = {
+        name: "sd-textures",
+        mode: "override",
+        builds: [ "*" ],
+        directory: sourceDirectory,
+        provenance: {
+            builtBy: "test",
+            sources: { [`res:/${texturePath}`]: { build: "88", md5: md5(official) } },
+        },
+    };
+
+    // 1. Before any overlay the official bytes are served, and the view that
+    //    answered is now opened and kept.
+    let response = await Get(`/eve/88/res/${texturePath}`);
+
+    assert.equal(await response.text(), "official-texture");
+    assert.equal(response.headers.get("x-carbon-overlay"), null);
+    assert.deepEqual((await (await Get("/eve/88/overlays")).json()).overlays, []);
+
+    // 2. A revise writes the overlay and drops the opened view: the next
+    //    request serves the replacement with no restart.
+    await fs.mkdir(path.join(sourceDirectory, path.dirname(texturePath)), { recursive: true });
+    await fs.writeFile(path.join(sourceDirectory, texturePath), replacement);
+
+    response = await Post("/v1/overlays/revise", revise);
+    assert.equal(response.status, 200);
+
+    const first = await response.json();
+
+    assert.equal(first.revision, 1);
+    assert.equal(first.revised, true);
+    assert.equal(first.rowCount, 1);
+
+    response = await Get(`/eve/88/res/${texturePath}`);
+    assert.equal(await response.text(), "upscaled-texture");
+    assert.equal(response.headers.get("x-carbon-overlay"), "sd-textures");
+    assert.equal(response.headers.get("x-carbon-overlay-mode"), "override");
+    assert.equal(response.headers.get("etag"), `"${md5(replacement)}"`);
+
+    // 3. `?index=main` still reaches EVE's file.
+    assert.equal(await (await Get(`/eve/88/res/${texturePath}?index=main`)).text(), "official-texture");
+
+    // 4. The listing names the overlay; its rows carry the official checksum
+    //    beside their own, and the provenance round-trips.
+    const listed = await (await Get("/eve/88/overlays")).json();
+
+    assert.deepEqual(listed.overlays.map(entry => [ entry.name, entry.mode, entry.revision, entry.rowCount ]), [
+        [ "sd-textures", "override", 1, 1 ],
+    ]);
+
+    const one = await (await Get("/eve/88/overlays/sd-textures?official=true")).json();
+
+    assert.deepEqual(one.rows, [ {
+        logicalPath: `res:/${texturePath}`,
+        checksum: md5(replacement),
+        byteLength: replacement.byteLength,
+        official: { checksum: md5(official), byteLength: official.byteLength },
+    } ]);
+    assert.deepEqual(one.provenance, revise.provenance);
+    assert.equal((await Get("/eve/88/overlays/nothing")).status, 404);
+
+    // 5. The same files again is a no-op.
+    const again = await (await Post("/v1/overlays/revise", revise)).json();
+
+    assert.equal(again.revised, false);
+    assert.equal(again.revision, 1);
+
+    // 6. An empty directory removes the overlay, and EVE's file comes back.
+    await fs.mkdir(emptyDirectory);
+
+    const removed = await (await Post("/v1/overlays/revise", { ...revise, directory: emptyDirectory })).json();
+
+    assert.equal(removed.removed, true);
+    assert.equal(await (await Get(`/eve/88/res/${texturePath}`)).text(), "official-texture");
+    assert.deepEqual((await (await Get("/eve/88/overlays")).json()).overlays, []);
+
+    // 7. A hand import is picked up after `refresh`, not before.
+    await fs.mkdir(path.join(handDirectory, path.dirname(texturePath)), { recursive: true });
+    await fs.writeFile(path.join(handDirectory, texturePath), replacement);
+    await overlayStore.Import({
+        target: "eve",
+        game: "Eve",
+        provider: "ccp",
+        name: "hand",
+        mode: "override",
+        builds: [ "*" ],
+        sourceDirectory: handDirectory,
+        entries: [ { logicalPath: `res:/${texturePath}`, location: texturePath } ],
+    });
+    assert.equal(await (await Get(`/eve/88/res/${texturePath}`)).text(), "official-texture");
+
+    const refreshed = await (await Post("/v1/overlays/refresh", {})).json();
+
+    assert.ok(refreshed.dropped > 0);
+    assert.equal(await (await Get(`/eve/88/res/${texturePath}`)).text(), "upscaled-texture");
+
+    // A bad body is refused rather than guessed at.
+    assert.equal((await Post("/v1/overlays/revise", { name: "x", directory: "relative/dir" })).status, 400);
+    assert.equal((await Post("/v1/overlays/revise", { name: "Bad Name!", directory: sourceDirectory })).status, 400);
+});
+
+test("overlay writes answer 501 without an overlay store", async context =>
+{
+    const server = new CjsToolHttpProxy({
+        indexes: { Open: async () => null, OpenTarget: async () => null },
+    }).CreateServer();
+
+    await new Promise((resolve, reject) =>
+    {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+    });
+    context.after(() => new Promise(resolve => server.close(resolve)));
+
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/overlays/revise`, {
+        method: "POST",
+        body: JSON.stringify({ name: "sd-textures", directory: "/tmp" }),
+    });
+
+    assert.equal(response.status, 501);
+});
+
 test("service launcher emits an unauthenticated loopback bootstrap record", async context =>
 {
     const executable = fileURLToPath(new URL("../bin/cjs-tools-service.js", import.meta.url));

@@ -124,8 +124,10 @@ The `carbon.resource-overlay` version 1 manifest accepts an optional boolean
 excludes the overlay before reading its index, so it cannot resolve resources,
 appear in resource listings (including `/res/resfiles`), or be inherited by
 another target. Other value types are rejected. Existing manifests need no
-changes. Already opened resource views retain their contents; reopen the view
-or restart the service to apply a manifest change.
+changes. Already opened resource views retain their contents. A write through
+`POST /v1/overlays/revise` drops the target's opened views itself; after a hand
+import or a manifest edit, `POST /v1/overlays/refresh` does the same, or restart
+the service ([HTTP routes](../reference/http-routes.md#overlay-routes)).
 
 Resolution order is:
 

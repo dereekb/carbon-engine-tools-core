@@ -35,6 +35,7 @@ export { CjsToolIndexTargetProfileRegistry } from "./CjsToolIndexTargetProfileRe
 export { CjsToolIndexSource } from "./CjsToolIndexSource.js";
 export { CjsToolIndexOverlaySource } from "./CjsToolIndexOverlaySource.js";
 export { CjsToolIndexOverlay, CjsToolIndexOverlayStore } from "./CjsToolIndexOverlayStore.js";
+export { collectOverlayDirectory } from "./collectOverlayDirectory.js";
 export { CjsToolIndexCache } from "./CjsToolIndexCache.js";
 export { CjsToolIndexSuppliedStore } from "./CjsToolIndexSuppliedStore.js";
 export { CjsToolIndexGraph } from "./CjsToolIndexGraph.js";
