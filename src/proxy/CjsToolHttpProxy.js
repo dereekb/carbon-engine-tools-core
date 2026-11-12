@@ -1,11 +1,13 @@
 import { CjsSchema } from "@carbonenginejs/runtime/schema";
 import fs from "node:fs/promises";
 import http from "node:http";
+import path from "node:path";
 
 import { ESI_COMPATIBILITY_DATE } from "../auth/CjsToolEsiCompatibilityDate.js";
 import { CjsToolEveSso } from "../auth/CjsToolEveSso.js";
 import { CjsToolBlack } from "../black/CjsToolBlack.js";
 import { CjsToolIndexAnswerCatalog, HullTextureResPaths } from "../indexing/CjsToolIndexAnswerCatalog.js";
+import { collectOverlayDirectory } from "../indexing/collectOverlayDirectory.js";
 import { CjsToolSkin } from "../skin/CjsToolSkin.js";
 import { CjsToolSkinrPattern } from "../skin/CjsToolSkinrPattern.js";
 import { CjsToolWeapon } from "../weapon/CjsToolWeapon.js";
@@ -92,6 +94,7 @@ const CORS_HEADERS = ALLOW_ORIGIN === "none" ? Object.freeze({}) : Object.freeze
         "X-Carbon-Resfile",
         "X-Carbon-Payload-Store",
         "X-Carbon-Overlay",
+        "X-Carbon-Overlay-Mode",
         "X-Carbon-Storage-Kind",
         "X-Carbon-SOF-Hull",
         "X-Carbon-Respath-Insert",
@@ -140,6 +143,7 @@ export class CjsToolHttpProxy
         sof = null,
         sde = null,
         skinrStore = null,
+        overlays = null,
         plexRate = null,
         market = null,
         identity = null,
@@ -190,6 +194,12 @@ export class CjsToolHttpProxy
             throw new TypeError("CjsToolHttpProxy SKINR store must provide ListCards()");
         }
 
+        if (overlays !== null
+            && (typeof overlays.Revise !== "function" || typeof overlays.Remove !== "function"))
+        {
+            throw new TypeError("CjsToolHttpProxy overlays must be a CjsToolIndexOverlayStore");
+        }
+
         if (plexRate !== null && typeof plexRate.Read !== "function")
         {
             throw new TypeError("CjsToolHttpProxy PLEX rate must provide Read()");
@@ -235,6 +245,10 @@ export class CjsToolHttpProxy
         // A harvested store, injected rather than opened here: this class does no
         // file discovery, and a service without a harvest simply answers 501.
         this.skinrStore = skinrStore;
+        // The persistent overlay store `indexes` composes from, injected so the
+        // write routes (`/v1/overlays/revise`) can change it and then drop the
+        // views opened before the change. Without it those routes answer 501.
+        this.overlays = overlays;
         // A live market reading, injected like every other service here.
         this.plexRate = plexRate;
         // Regional order books and price history.
@@ -741,6 +755,13 @@ export class CjsToolHttpProxy
                 targetRoute = Object.freeze({ ...targetRoute, topic: "res" });
             }
 
+            if (targetRoute.topic === "overlays")
+            {
+                await this.#HandleOverlaysRoute(targetRoute, url, response);
+
+                return;
+            }
+
             if (targetRoute.topic === "sof")
             {
                 await this.#HandleSofIndexAnswerRoute(request, targetRoute, response);
@@ -953,6 +974,11 @@ export class CjsToolHttpProxy
                     } : {}),
                     ...(file.resolution.overlay ? {
                         "x-carbon-overlay": file.resolution.overlay,
+                        // Override or fallback: a caller cannot tell a
+                        // replacement from a gap filler by the name alone.
+                        ...(file.resolution.overlayMode ? {
+                            "x-carbon-overlay-mode": file.resolution.overlayMode,
+                        } : {}),
                         "x-carbon-storage-kind": file.resolution.storageKind,
                     } : {}),
                     ...(format === null
@@ -1131,6 +1157,26 @@ export class CjsToolHttpProxy
         if (request.method === "POST" && targetRoute?.topic === "sof")
         {
             await this.#HandleSofIndexAnswerRoute(request, targetRoute, response);
+
+            return;
+        }
+
+        // Overlay writes sit under `/v1/`, never under a target route: a hub's
+        // `/tools-core/<target>/` passthrough forwards target routes to other
+        // machines, and these read a directory on this one.
+        if (request.method === "POST" && url.pathname === "/v1/overlays/revise")
+        {
+            await this.#HandleOverlayReviseRoute(request, response);
+
+            return;
+        }
+
+        if (request.method === "POST" && url.pathname === "/v1/overlays/refresh")
+        {
+            const body = await ReadJson(request, this.maxRequestBytes);
+            const target = String(body.target ?? "eve").trim().toLowerCase();
+
+            WriteJson(response, 200, { target, dropped: this.#DropTargetViews(target) });
 
             return;
         }
@@ -2068,6 +2114,204 @@ export class CjsToolHttpProxy
         }
 
         return catalog;
+    }
+
+    /**
+     * Forgets every resource view opened for one target, all builds and
+     * clients, so the next request composes its overlays again.
+     *
+     * An opened view keeps the overlays it was composed from for as long as it
+     * lives, and with the build cache the current build's view never expires:
+     * without this an overlay change waited for a restart.
+     *
+     * @returns {number} How many views were dropped.
+     */
+    #DropTargetViews(target)
+    {
+        let dropped = 0;
+
+        for (const map of [ this.#targetSources, this.#answerCatalogs ])
+        {
+            for (const key of [ ...map.keys() ])
+            {
+                if (key.split("\0")[0] === target)
+                {
+                    map.delete(key);
+                    dropped++;
+                }
+            }
+        }
+
+        return dropped;
+    }
+
+    /**
+     * `POST /v1/overlays/revise`: writes one persistent overlay from a
+     * directory on this machine, then drops the target's opened views.
+     *
+     * Body: `{ target = "eve", name, mode = "override", builds = ["*"],
+     * directory, provenance? }`. The directory is laid out by logical path
+     * (`<directory>/dx9/model/x.dds` is `res:/dx9/model/x.dds`). A revise with
+     * unchanged files is a no-op (`revised: false`); an empty directory removes
+     * the overlay, leaving its payloads in the store.
+     */
+    async #HandleOverlayReviseRoute(request, response)
+    {
+        if (!this.overlays || typeof this.indexes?.DescribeTarget !== "function")
+        {
+            WriteJson(response, 501, { error: "Overlay writes are not configured" });
+
+            return;
+        }
+
+        const body = await ReadJson(request, this.maxRequestBytes);
+        const target = String(body.target ?? "eve").trim().toLowerCase();
+        const name = String(body.name ?? "").trim().toLowerCase();
+        const mode = String(body.mode ?? "override").trim().toLowerCase();
+        const builds = body.builds ?? [ "*" ];
+        const directory = typeof body.directory === "string" ? body.directory.trim() : "";
+
+        if (!/^[a-z0-9][a-z0-9._-]*$/u.test(name)
+            || ![ "override", "fallback" ].includes(mode)
+            || !Array.isArray(builds) || builds.length === 0
+            || !path.isAbsolute(directory))
+        {
+            WriteJson(response, 400, {
+                error: "Expected { name, mode: override|fallback, builds: [...], directory: <absolute path> }",
+            });
+
+            return;
+        }
+
+        let entries;
+
+        try
+        {
+            entries = await collectOverlayDirectory(directory);
+        }
+        catch (error)
+        {
+            WriteJson(response, 400, { error: `Cannot read ${directory}: ${error.message}` });
+
+            return;
+        }
+
+        if (entries.length === 0)
+        {
+            const removed = await this.overlays.Remove({ target, name });
+
+            WriteJson(response, 200, {
+                name,
+                revision: null,
+                revised: removed,
+                removed,
+                rowCount: 0,
+                byteLength: 0,
+                dropped: this.#DropTargetViews(target),
+            });
+
+            return;
+        }
+
+        const described = await this.indexes.DescribeTarget(target);
+        const result = await this.overlays.Revise({
+            target,
+            name,
+            mode,
+            builds,
+            game: described.game,
+            provider: described.provider,
+            sourceDirectory: directory,
+            entries: entries.map(({ logicalPath, location }) => ({ logicalPath, location })),
+            provenance: body.provenance ?? null,
+        });
+
+        WriteJson(response, 200, {
+            name,
+            revision: result.revision,
+            // Import answers no flag; a first write is a change.
+            revised: result.revised ?? true,
+            rowCount: result.rowCount,
+            byteLength: result.byteLength,
+            dropped: this.#DropTargetViews(target),
+        });
+    }
+
+    /**
+     * `GET /<target>/<build>/overlays[/<name>][?official=true]`: the overlays
+     * composed into one exact build's resource view, or one overlay with its
+     * rows. Read-only and under the target routes, so a hub's passthrough
+     * reaches it from another machine. `official=true` adds each row's
+     * official checksum and size (`null` where the official index has no such
+     * path), which is how a caller tells a replacement made from an older
+     * original.
+     */
+    async #HandleOverlaysRoute(route, url, response)
+    {
+        const source = await this.#OpenTargetSource(route.target, route.build);
+        const overlays = source.overlays ?? [];
+        const name = route.path ? route.path.replace(/\/+$/u, "").toLowerCase() : "";
+        const base = { target: source.target, build: source.build };
+        const Describe = overlay => ({
+            name: overlay.name,
+            mode: overlay.mode,
+            builds: overlay.builds,
+            revision: overlay.revision,
+            rowCount: overlay.rowCount,
+            byteLength: overlay.byteLength,
+            storageKind: overlay.storageKind,
+            payloadLayout: overlay.payloadLayout,
+        });
+
+        if (!name)
+        {
+            WriteJson(response, 200, { ...base, overlays: overlays.map(Describe) });
+
+            return;
+        }
+
+        const overlay = overlays.find(entry => entry.name === name);
+
+        if (!overlay)
+        {
+            WriteJson(response, 404, {
+                error: `No overlay "${name}" in ${source.target} ${source.build}`,
+            });
+
+            return;
+        }
+
+        const official = url.searchParams.get("official") === "true";
+        const Official = logicalPath =>
+        {
+            try
+            {
+                const { record } = source.Resolve(logicalPath, { indexName: "main" });
+
+                return { checksum: record.checksum ?? null, byteLength: record.size ?? null };
+            }
+            catch (error)
+            {
+                if (error?.code === "CJS_RESOURCE_NOT_FOUND")
+                {
+                    return null;
+                }
+
+                throw error;
+            }
+        };
+
+        WriteJson(response, 200, {
+            ...base,
+            ...Describe(overlay),
+            provenance: overlay.provenance ?? null,
+            rows: overlay.group.entries.map(record => ({
+                logicalPath: record.logicalPath,
+                checksum: record.checksum ?? null,
+                byteLength: record.size ?? null,
+                ...(official ? { official: Official(record.logicalPath) } : {}),
+            })),
+        });
     }
 
     /** Opens or reuses one resolved exact-build index source. */

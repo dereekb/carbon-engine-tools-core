@@ -960,6 +960,38 @@ export class CjsToolIndexOverlayStore
         }
     }
 
+    /**
+     * Removes one persistent overlay: its manifest and index, never its payloads.
+     *
+     * The directory is renamed aside before it is deleted, so a reader never
+     * opens a half-deleted overlay. Content-addressed payloads stay in
+     * `ResFiles`, where another overlay (or a later import of the same bytes)
+     * may still name them.
+     *
+     * @returns {Promise<boolean>} Whether an overlay was there to remove.
+     */
+    async Remove(options)
+    {
+        const target = normalizeTargetId(options?.target);
+        const name = normalizeOverlayName(options?.name);
+        const overlayDirectory = this.GetOverlayDirectory(target, name);
+
+        if (!await exists(overlayDirectory))
+        {
+            return false;
+        }
+
+        const removedDirectory = safeJoin(
+            path.dirname(overlayDirectory),
+            `.${name}.removed-${crypto.randomUUID().toLowerCase()}`,
+        );
+
+        await fs.rename(overlayDirectory, removedDirectory);
+        await fs.rm(removedDirectory, { recursive: true, force: true });
+
+        return true;
+    }
+
     /** Registers a remote resfileindex-style fallback without copying payloads. */
     async ImportRemote(options)
     {

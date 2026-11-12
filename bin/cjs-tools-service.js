@@ -87,9 +87,12 @@ async function main()
     const heavyAcquisition = prefetchEnabled
         || args.noAudioAutoPrepare !== true
         || args.noSdeAutoPrepare !== true;
+    // One store, shared: the index composes overlays from it and the proxy's
+    // `/v1/overlays/*` routes write it.
+    const overlayStore = new CjsToolIndexOverlayStore(dataDirectory);
     const indexes = new CjsToolIndex({
         cache: new CjsToolIndexCache({ directory: cacheDirectory }),
-        overlays: new CjsToolIndexOverlayStore(dataDirectory),
+        overlays: overlayStore,
         supplied: new CjsToolIndexSuppliedStore(dataDirectory),
         requestTimeoutMs: Number(
             args.requestTimeoutMs
@@ -169,6 +172,7 @@ async function main()
         audio,
         auth,
         skinrStore: OpenSkinrStore(dataDirectory),
+        overlays: overlayStore,
         // Tokenless, like identity: `/markets/prices` is public, so the PLEX
         // reference works on a deployment nobody has signed in on. Requiring a
         // login meant the live site answered 503 and the hub lost BOTH figures -

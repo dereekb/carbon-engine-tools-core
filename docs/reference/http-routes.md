@@ -77,6 +77,8 @@ GET /serenity/<exact-build>/app/<path>
 GET /eve/<build>/<topic>[/<path>]
 GET /eve/<build>/resources[/<path>]
 GET /eve/<build>/resource[/<path>]
+GET /eve/<build>/overlays
+GET /eve/<build>/overlays/<name>[?official=true]
 ```
 
 **A target is the address.** `provider`, `game` and `client` are things a target
@@ -720,6 +722,40 @@ reports the resolution, size, cache path and whether it was a cache hit.
 
 Each of these answers `501` when the service was started without the part it
 needs, and `400` for a malformed id, region, type or kind.
+
+### Overlay routes
+
+```text
+GET  /eve/<build>/overlays
+GET  /eve/<build>/overlays/<name>[?official=true]
+POST /v1/overlays/revise    { target = "eve", name, mode = "override", builds = ["*"], directory, provenance? }
+POST /v1/overlays/refresh   { target = "eve" }
+```
+
+The two `GET` routes are read-only and live under the target routes, so a proxy
+that forwards `/eve/` (a hub's `/tools-core/` passthrough) reaches them. The
+first lists the overlays composed into that build's resource view (`name`,
+`mode`, `builds`, `revision`, `rowCount`, `byteLength`, `storageKind`,
+`payloadLayout`); the second adds one overlay's `provenance` and its `rows`
+(`logicalPath`, `checksum`, `byteLength`), and with `official=true` each row's
+`official: { checksum, byteLength }` from the official `main` index, or `null`
+where EVE has no such path. An unknown name answers `404`.
+
+The two `POST` routes write, so they stay under `/v1/` and are never forwarded.
+`revise` reads `directory` on this machine (absolute, laid out by logical path:
+`<directory>/dx9/x.dds` is `res:/dx9/x.dds`, lower-cased) and writes the named
+persistent overlay through `CjsToolIndexOverlayStore.Revise`, which imports it
+when it does not exist yet and is a no-op (`revised: false`) when the rows did
+not change. An empty directory removes the overlay (`removed: true`); its
+content-addressed payloads stay in `ResFiles`. Both routes then drop every
+resource view opened for the target, so the next request composes the overlays
+again with no restart (`dropped` counts the views). `refresh` does only that,
+after a hand `cjs-overlay-import` or a manifest edit. They answer `501` when the
+service has no overlay store, and `revise` answers `400` for a bad name, mode,
+build list or a relative directory.
+
+A resource answered by an overlay carries `x-carbon-overlay: <name>`,
+`x-carbon-overlay-mode: override|fallback` and `x-carbon-storage-kind`.
 
 ## Authenticated ESI routes
 

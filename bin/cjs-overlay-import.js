@@ -33,10 +33,9 @@
  * becomes `res:/dx9/model/...`.
  */
 
-import fs from "node:fs/promises";
 import path from "node:path";
 
-import { CjsToolIndexOverlayStore } from "../src/indexing/index.js";
+import { CjsToolIndexOverlayStore, collectOverlayDirectory } from "../src/indexing/index.js";
 
 const HELP = `Usage:
   cjs-overlay-import --name <name> --mode <override|fallback> --dir <directory>
@@ -83,7 +82,7 @@ async function Main(argv)
     }
 
     const root = path.resolve(options.dir);
-    const entries = await Collect(root);
+    const entries = await collectOverlayDirectory(root);
 
     if (!entries.length) throw new Error(`No files found under ${root}`);
 
@@ -155,46 +154,9 @@ async function Main(argv)
         rowCount: result?.rowCount ?? entries.length,
         byteLength
     }, null, 2)}\n`);
-}
-
-/** Every file under the root, addressed by its path relative to it. */
-async function Collect(root)
-{
-    const entries = [];
-
-    const Walk = async (current) =>
-    {
-        for (const item of await fs.readdir(current, { withFileTypes: true }))
-        {
-            // Dot directories are editor and VCS noise, never payload.
-            if (item.name.startsWith(".")) continue;
-
-            const full = path.join(current, item.name);
-
-            if (item.isDirectory())
-            {
-                await Walk(full);
-                continue;
-            }
-
-            const location = path.relative(root, full).split(path.sep).join("/");
-            const stat = await fs.stat(full);
-
-            entries.push({
-                // Lower cased because the source mixes case freely and the
-                // resource layer addresses in lower case; an overlay recorded
-                // under a capitalised path silently never matches.
-                logicalPath: `res:/${location}`.toLowerCase(),
-                location,
-                byteLength: stat.size
-            });
-        }
-    };
-
-    await Walk(root);
-    entries.sort((left, right) => left.logicalPath.localeCompare(right.logicalPath));
-
-    return entries;
+    // A running service keeps the views it already opened; this route makes it
+    // read the overlays again without a restart.
+    Say("a running cjs-tools-service picks this up after: curl -X POST http://127.0.0.1:5510/v1/overlays/refresh");
 }
 
 function Say(message)
